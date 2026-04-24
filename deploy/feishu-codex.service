@@ -1,0 +1,18 @@
+[Unit]
+Description=Feishu Codex Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/feishu-codex-bridge
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/root/.local/bin
+ExecStart=/opt/feishu-codex-bridge/.venv/bin/python /opt/feishu-codex-bridge/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
