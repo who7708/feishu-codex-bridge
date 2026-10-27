@@ -68,6 +68,15 @@ def _trace_log(message: str):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
 
 
+def _is_user_allowed(open_id: str, source: str) -> bool:
+    if config.is_open_id_allowed(open_id):
+        return True
+    _trace_log(
+        f"[访问控制] source={source} decision=deny open_id_suffix={open_id[-8:] if open_id else '-'}"
+    )
+    return False
+
+
 def _log_content(label: str, content: str, message_id: str = ""):
     """默认只写长度与关联 ID；需核对原文时由本机显式开启受限预览。"""
     request_id = message_id[-8:] if message_id else "-"
@@ -205,6 +214,8 @@ async def handle_message_from_cli(evt: dict):
         parent_id = evt.get("parent_id", evt.get("quoted_message_id", ""))
 
     if not user_id or not message_id:
+        return
+    if not _is_user_allowed(user_id, "message"):
         return
 
     # 去重：忽略已处理过的消息（防止重连后重放）
@@ -668,6 +679,9 @@ async def handle_doc_comment_from_cli(evt: dict):
     from_user = notice_meta.get("from_user_id", {})
     user_id = from_user.get("open_id", "") if isinstance(from_user, dict) else ""
 
+    if not _is_user_allowed(user_id, "doc_comment"):
+        return
+
     print(f"[文档评论] file={file_token[:12]}... comment={comment_id} user={user_id[:8] if user_id else 'N/A'}", flush=True)
     print(f"[文档评论] raw keys: {list(event.keys())}", flush=True)
     print(f"[文档评论] raw event: {json.dumps(evt, ensure_ascii=False)[:500]}", flush=True)
@@ -836,6 +850,8 @@ async def _poll_comment_replies(lark_cli, file_token, file_type, comment_id, use
                 sender = reply.get("user_id", "")
                 if sender == bot_app_id or not sender:
                     continue
+                if not _is_user_allowed(sender, "doc_comment_reply"):
+                    continue
 
                 # 提取回复文本
                 elements = reply.get("content", {}).get("elements", [])
@@ -921,6 +937,8 @@ async def handle_card_action_from_cli(evt: dict):
     msg_id = evt.get("open_message_id", "")
 
     if not user_id:
+        return
+    if not _is_user_allowed(user_id, "card_action"):
         return
 
     action_type = value.get("action", "")

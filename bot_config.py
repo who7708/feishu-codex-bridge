@@ -8,6 +8,17 @@ load_dotenv()
 FEISHU_APP_ID = os.environ["FEISHU_APP_ID"]
 FEISHU_APP_SECRET = os.environ["FEISHU_APP_SECRET"]
 
+# 未配置时不限制使用者；配置后仅允许列表中的飞书 open_id 进入消息处理流程。
+ALLOWED_OPEN_IDS = frozenset(
+    open_id.strip()
+    for open_id in os.getenv("ALLOWED_OPEN_IDS", "").split(",")
+    if open_id.strip()
+)
+
+
+def is_open_id_allowed(open_id: str) -> bool:
+    return not ALLOWED_OPEN_IDS or open_id in ALLOWED_OPEN_IDS
+
 CODEX_CLI = os.getenv("CODEX_CLI_PATH") or shutil.which("codex") or "codex"
 
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-6-luna")

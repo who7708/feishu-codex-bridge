@@ -153,6 +153,7 @@ flowchart LR
 | --- | :---: | --- | --- |
 | `FEISHU_APP_ID` | 是 | 无 | 飞书应用 App ID |
 | `FEISHU_APP_SECRET` | 是 | 无 | 飞书应用 App Secret |
+| `ALLOWED_OPEN_IDS` | 否 | 空（允许所有人） | 逗号分隔的飞书用户 open_id；配置后仅名单用户可使用消息、卡片按钮和文档评论入口 |
 | `DEFAULT_MODEL` | 否 | `gpt-5.5` | 默认 Codex 模型 |
 | `DEFAULT_CWD` | 否 | `~` | 默认工作目录 |
 | `TICKET_DB_CONFIG_DIR` | 否 | `DEFAULT_CWD` | 票务环境配置文件目录 |
@@ -160,6 +161,7 @@ flowchart LR
 | `CODEX_CLI_PATH` | 否 | PATH 中的 `codex` | Codex CLI 路径 |
 | `CALLBACK_PORT` | 否 | `9982` | 兼容配置 |
 | `STREAM_CHUNK_SIZE` | 否 | `20` | 兼容配置 |
+| `IDLE_TIMEOUT` | 否 | `600` | Codex 子进程连续无 stdout 输出的超时秒数 |
 | `LOG_CONVERSATION_CONTENT` | 否 | `false` | 设为 `true` 时在控制台输出截断后的输入与 Codex 回复预览；可能包含业务数据 |
 
 消息排查日志默认使用原飞书消息 ID 后 8 位作为关联标识，并记录事件分发、Codex 进程/事件/工具调用、输出长度与耗时、卡片更新结果。为保护会话内容，默认不写入消息正文、回复正文或工具参数值。仅在本机短时排查且能控制日志访问权限时，才将 `LOG_CONVERSATION_CONTENT=true`；开启后输入预览最多 500 字符，回复预览最多 2000 字符。
