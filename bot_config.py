@@ -30,6 +30,9 @@ PERMISSION_MODE = DEFAULT_MODE
 LOG_CONVERSATION_CONTENT = os.getenv("LOG_CONVERSATION_CONTENT", "false").strip().lower() in {
     "1", "true", "yes", "on",
 }
+LOG_CODEX_EVENT_CONTENT = os.getenv("LOG_CODEX_EVENT_CONTENT", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 SESSIONS_DIR = os.path.expanduser("~/.feishu-codex")
 

@@ -155,6 +155,7 @@ The runtime flow is: Feishu/Lark events enter through `lark-cli`, `main.py` pars
 | `DEFAULT_CWD` | No | `~` | Default working directory |
 | `DEFAULT_MODE` | No | `plan` | Default permission mode |
 | `CODEX_CLI_PATH` | No | `codex` from PATH | Codex CLI path |
+| `LOG_CODEX_EVENT_CONTENT` | No | `false` | Set to `true` to log each full Codex JSONL event; may include prompts, tool arguments, and tool output. Enable only for temporary troubleshooting. |
 | `CALLBACK_PORT` | No | `9982` | Compatibility setting |
 | `STREAM_CHUNK_SIZE` | No | `20` | Compatibility setting |
 

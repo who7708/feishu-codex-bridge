@@ -14,7 +14,10 @@ import tempfile
 import time
 from typing import Callable, Optional
 
-from bot_config import CODEX_CLI, CODEX_IDLE_TIMEOUT, DEFAULT_MODE, TICKET_DB_CONFIG_DIR, TICKET_MCP_SERVER
+from bot_config import (
+    CODEX_CLI, CODEX_IDLE_TIMEOUT, DEFAULT_MODE, LOG_CODEX_EVENT_CONTENT,
+    TICKET_DB_CONFIG_DIR, TICKET_MCP_SERVER,
+)
 
 
 def _trace_log(message: str):
@@ -250,6 +253,11 @@ async def run_codex(
             _trace_log(
                 f"[Codex 事件] pid={proc.pid} type={event_type} item={item_type or '-'}",
             )
+            if LOG_CODEX_EVENT_CONTENT:
+                _trace_log(
+                    f"[Codex 事件内容] pid={proc.pid} "
+                    f"{json.dumps(data, ensure_ascii=False, separators=(',', ':'))}"
+                )
 
             sid = _extract_session_id(data)
             if sid:
