@@ -14,9 +14,7 @@ import tempfile
 import time
 from typing import Callable, Optional
 
-from bot_config import CODEX_CLI, DEFAULT_MODE, TICKET_DB_CONFIG_DIR, TICKET_MCP_SERVER
-
-IDLE_TIMEOUT = 900
+from bot_config import CODEX_CLI, CODEX_IDLE_TIMEOUT, DEFAULT_MODE, TICKET_DB_CONFIG_DIR, TICKET_MCP_SERVER
 
 
 def _trace_log(message: str):
@@ -197,7 +195,7 @@ async def run_codex(
     await _fire_callback(on_process_start, proc)
     started_at = asyncio.get_running_loop().time()
     last_stdout_at = started_at
-    next_wait_log_at = started_at + min(15, IDLE_TIMEOUT)
+    next_wait_log_at = started_at + min(15, CODEX_IDLE_TIMEOUT)
     _trace_log(f"[Codex 子进程] 已启动 pid={proc.pid}")
 
     proc.stdin.write((message + "\n").encode())
@@ -212,20 +210,20 @@ async def run_codex(
             try:
                 now = asyncio.get_running_loop().time()
                 idle_for = now - last_stdout_at
-                remaining = IDLE_TIMEOUT - idle_for
+                remaining = CODEX_IDLE_TIMEOUT - idle_for
                 raw_line = await asyncio.wait_for(
                     proc.stdout.readline(), timeout=min(15, max(0.1, remaining))
                 )
             except asyncio.TimeoutError:
                 now = asyncio.get_running_loop().time()
                 idle_for = now - last_stdout_at
-                if idle_for >= IDLE_TIMEOUT:
+                if idle_for >= CODEX_IDLE_TIMEOUT:
                     proc.kill()
                     await proc.wait()
                     _trace_log(
                         f"[Codex 子进程] 空闲超时 pid={proc.pid} idle={idle_for:.0f}s，已终止",
                     )
-                    raise RuntimeError(f"Codex 执行超时（{IDLE_TIMEOUT}秒无输出），已终止进程")
+                    raise RuntimeError(f"Codex 执行超时（{CODEX_IDLE_TIMEOUT}秒无输出），已终止进程")
                 if now >= next_wait_log_at:
                     _trace_log(
                         f"[Codex 子进程] 仍在运行 pid={proc.pid} elapsed={now-started_at:.0f}s "

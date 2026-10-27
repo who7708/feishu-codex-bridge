@@ -1428,12 +1428,9 @@ async def _event_reader(proc):
     reader = threading.Thread(target=_reader_thread, daemon=True)
     reader.start()
 
-    # 固定 10 分钟空闲超时：笔记本睡醒后最多等 10 分钟 bot 就能恢复响应。
-    # 比之前 2 小时的自适应超时激进得多，但能确保用户体验。
+    # IDLE_TIMEOUT 控制连接多久没有事件后重连，默认 600 秒；笔记本睡醒后可尽快恢复响应。
     # lark-cli 内部会发 WebSocket ping，所以连接正常时不会触发这个超时。
     _last_event_in_reader = time.time()
-    IDLE_TIMEOUT = 600
-
     while True:
         # 每次最多等 5 秒，好让我们及时响应 _wake_event（休眠唤醒信号）
         try:
@@ -1447,7 +1444,7 @@ async def _event_reader(proc):
                 break
             # 再看是否真的静默太久
             idle_seconds = time.time() - _last_event_in_reader
-            if idle_seconds > IDLE_TIMEOUT:
+            if idle_seconds > config.IDLE_TIMEOUT:
                 print(f"[lark-cli] ⚠️ {idle_seconds/60:.0f}分钟无事件，重启连接", flush=True)
                 _kill_process_tree(proc)
                 break

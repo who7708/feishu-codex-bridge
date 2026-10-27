@@ -41,3 +41,5 @@ TICKET_MCP_SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ti
 
 CALLBACK_PORT = int(os.getenv("CALLBACK_PORT", "9982"))
 STREAM_CHUNK_SIZE = int(os.getenv("STREAM_CHUNK_SIZE", "20"))
+IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", "600"))
+CODEX_IDLE_TIMEOUT = int(os.getenv("CODEX_IDLE_TIMEOUT", "900"))
