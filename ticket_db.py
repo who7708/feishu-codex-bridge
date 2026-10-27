@@ -5,9 +5,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
+import inspect
+import json
 import logging
 import os
 from pathlib import Path
+import time
 from typing import Any, Iterator, Literal
 
 from dotenv import dotenv_values
@@ -72,29 +75,57 @@ class TicketDatabase:
 
     @contextmanager
     def cursor(self, environment: str) -> Iterator[Any]:
-        config = self._config(environment)
+        try:
+            config = self._config(environment)
+        except Exception as exc:
+            logger.error(
+                "票务数据库配置读取失败: environment=%s errorType=%s",
+                environment, type(exc).__name__,
+            )
+            raise
         try:
             port = int(config["DB_PORT"])
         except (TypeError, ValueError):
             raise ValueError("目标环境数据库配置无效") from None
-        connection = pymysql.connect(
-            host=config["DB_HOST"],
-            port=port,
-            user=config["DB_USER"],
-            password=config["DB_PASSWORD"],
-            database=config["DB_NAME"],
-            charset=config.get("DB_CHARSET", "utf8mb4"),
-            connect_timeout=5,
-            read_timeout=15,
-            write_timeout=5,
-            cursorclass=DictCursor,
-            autocommit=False,
+        connect_started = time.monotonic()
+        logger.info("票务数据库连接开始: environment=%s", environment)
+        try:
+            connection = pymysql.connect(
+                host=config["DB_HOST"],
+                port=port,
+                user=config["DB_USER"],
+                password=config["DB_PASSWORD"],
+                database=config["DB_NAME"],
+                charset=config.get("DB_CHARSET", "utf8mb4"),
+                connect_timeout=5,
+                read_timeout=15,
+                write_timeout=5,
+                cursorclass=DictCursor,
+                autocommit=False,
+            )
+        except Exception as exc:
+            logger.error(
+                "票务数据库连接失败: environment=%s elapsed_ms=%d errorType=%s",
+                environment, int((time.monotonic() - connect_started) * 1000),
+                type(exc).__name__,
+            )
+            raise
+        logger.info(
+            "票务数据库连接成功: environment=%s elapsed_ms=%d",
+            environment, int((time.monotonic() - connect_started) * 1000),
         )
         try:
             with connection.cursor() as cursor:
                 # 即使连接账号误有写权限，本次工具事务也只能执行只读 SQL。
                 cursor.execute("SET SESSION TRANSACTION READ ONLY")
+                logger.info("票务数据库只读事务已启用: environment=%s", environment)
                 yield cursor
+        except Exception as exc:
+            logger.error(
+                "票务数据库查询阶段失败: environment=%s errorType=%s",
+                environment, type(exc).__name__,
+            )
+            raise
         finally:
             connection.rollback()
             connection.close()
@@ -796,11 +827,63 @@ class TicketDatabase:
 
 def safe_tool_call(tool_name: str, operation, *args: Any, **kwargs: Any) -> dict[str, Any]:
     """屏蔽配置路径、连接串、证件号和驱动异常细节，避免泄露到飞书。"""
+    environment = (
+        args[0] if args and isinstance(args[0], str) and args[0] in ENV_FILES
+        else "unknown"
+    )
+    started = time.monotonic()
     try:
-        return operation(*args, **kwargs)
+        bound_args = inspect.signature(operation).bind_partial(*args, **kwargs).arguments
+    except (TypeError, ValueError):
+        bound_args = {**kwargs, "argument_count": len(args)}
+    logger.info(
+        "票务工具开始: tool=%s environment=%s args=%s",
+        tool_name, environment, _safe_tool_arguments(bound_args),
+    )
+    try:
+        result = operation(*args, **kwargs)
+        status = "error" if isinstance(result, dict) and result.get("error") else "ok"
+        logger.info(
+            "票务工具结束: tool=%s environment=%s status=%s elapsed_ms=%d",
+            tool_name, environment, status, int((time.monotonic() - started) * 1000),
+        )
+        return result
     except ToolInputError as exc:
+        logger.info(
+            "票务工具参数拒绝: tool=%s environment=%s elapsed_ms=%d",
+            tool_name, environment, int((time.monotonic() - started) * 1000),
+        )
         return {"error": str(exc)}
     except Exception as exc:  # SQL/连接错误可能包含驱动细节或敏感配置，不能原样回传。
-        logger.error("票务工具失败: tool=%s errorType=%s", tool_name, type(exc).__name__)
+        logger.error(
+            "票务工具失败: tool=%s environment=%s elapsed_ms=%d errorType=%s",
+            tool_name, environment, int((time.monotonic() - started) * 1000),
+            type(exc).__name__,
+        )
         return {"error": "查询失败，请检查目标环境配置或数据库连接。未返回任何连接或密钥信息。"}
+
+
+def _safe_tool_arguments(arguments: dict[str, Any]) -> str:
+    """记录便于排查的入参，同时隐藏票务标识和个人信息。"""
+    sensitive_parts = ("id", "code", "name", "ticket", "stock", "auth")
+
+    def sanitize(key: str, value: Any) -> Any:
+        normalized_key = key.replace("_", "").casefold()
+        if normalized_key != "environment" and any(part in normalized_key for part in sensitive_parts):
+            return None if value is None else "<已脱敏>"
+        if isinstance(value, dict):
+            return {str(child_key): sanitize(str(child_key), child_value) for child_key, child_value in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [sanitize(key, item) for item in value[:20]]
+        if isinstance(value, str):
+            return value[:80]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return f"<{type(value).__name__}>"
+
+    return json.dumps(
+        {str(key): sanitize(str(key), value) for key, value in arguments.items()},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Codex 通过 stdio MCP 使用的票务只读查询工具。"""
 
+import logging
+import sys
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -165,4 +167,17 @@ def query_seat_plan_bound_auth_codes(seatPlanId: str, environment: Environment =
 
 if __name__ == "__main__":
     # MCP stdio 协议独占 stdout；不要在该进程使用 print 输出调试信息。
-    mcp.run(transport="stdio")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+    logger = logging.getLogger(__name__)
+    logger.info("票务 MCP server 启动: transport=stdio")
+    try:
+        mcp.run(transport="stdio")
+    except Exception as exc:
+        logger.error("票务 MCP server 异常退出: errorType=%s", type(exc).__name__)
+        raise
+    else:
+        logger.info("票务 MCP server 已停止")
