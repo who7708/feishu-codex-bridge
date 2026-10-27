@@ -215,8 +215,6 @@ async def handle_message_from_cli(evt: dict):
 
     if not user_id or not message_id:
         return
-    if not _is_user_allowed(user_id, "message"):
-        return
 
     # 去重：忽略已处理过的消息（防止重连后重放）
     if message_id in _seen_message_ids:
@@ -242,6 +240,13 @@ async def handle_message_from_cli(evt: dict):
                 return
         except (ValueError, TypeError):
             pass
+
+    if not _is_user_allowed(user_id, "message"):
+        try:
+            await _add_reaction(message_id, "No")
+        except Exception as exc:
+            _trace_log(f"[访问控制] message={message_id[-8:]} deny_reaction_failed {type(exc).__name__}: {exc}")
+        return
 
     is_group = (chat_type == "group")
     raw_oc_chat_id = chat_id  # 保存原始的 oc_ chat_id（用于 API 调用）

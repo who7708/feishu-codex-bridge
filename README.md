@@ -153,7 +153,7 @@ flowchart LR
 | --- | :---: | --- | --- |
 | `FEISHU_APP_ID` | 是 | 无 | 飞书应用 App ID |
 | `FEISHU_APP_SECRET` | 是 | 无 | 飞书应用 App Secret |
-| `ALLOWED_OPEN_IDS` | 否 | 空（允许所有人） | 逗号分隔的飞书用户 open_id；配置后仅名单用户可使用消息、卡片按钮和文档评论入口 |
+| `ALLOWED_OPEN_IDS` | 否 | 空（允许所有人） | 逗号分隔的飞书用户 open_id；名单外的消息会在原消息上添加 `No` 表情，不触发 Codex |
 | `DEFAULT_MODEL` | 否 | `gpt-5.5` | 默认 Codex 模型 |
 | `DEFAULT_CWD` | 否 | `~` | 默认工作目录 |
 | `TICKET_DB_CONFIG_DIR` | 否 | `DEFAULT_CWD` | 票务环境配置文件目录 |
