@@ -214,11 +214,15 @@ async def handle_message_from_cli(evt: dict):
         parent_id = evt.get("parent_id", evt.get("quoted_message_id", ""))
 
     if not user_id or not message_id:
+        _trace_log(
+            f"[消息跳过] reason=missing_identity user_id_present={bool(user_id)} "
+            f"message_id_present={bool(message_id)}"
+        )
         return
 
     # 去重：忽略已处理过的消息（防止重连后重放）
     if message_id in _seen_message_ids:
-        print(f"[去重] 跳过已处理消息 {message_id}", flush=True)
+        _trace_log(f"[消息跳过] request={message_id[-8:]} reason=duplicate")
         return
     _seen_message_ids.add(message_id)
     if len(_seen_message_ids) > _MAX_SEEN:
@@ -236,7 +240,7 @@ async def handle_message_from_cli(evt: dict):
                 msg_ts = msg_ts / 1000
             age = time.time() - msg_ts
             if age > _MAX_MESSAGE_AGE:
-                print(f"[过期] 跳过 {age:.0f}s 前的消息 {message_id[:16]}...", flush=True)
+                _trace_log(f"[消息跳过] request={message_id[-8:]} reason=stale age={age:.0f}s")
                 return
         except (ValueError, TypeError):
             pass
@@ -292,13 +296,33 @@ async def handle_message_from_cli(evt: dict):
         _chat_locks[chat_id] = asyncio.Lock()
     lock = _chat_locks[chat_id]
 
-    async with lock:
-        try:
-            await _process_message_cli(user_id, chat_id, is_group, msg_type, content, message_id, mentions, raw_oc_chat_id, parent_id)
-        except Exception as e:
-            print(f"[error] 消息处理异常: {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc(file=sys.stdout)
-            sys.stdout.flush()
+    lock_wait_started = time.monotonic()
+    if lock.locked():
+        _trace_log(f"[消息队列] request={message_id[-8:]} status=waiting")
+    try:
+        async with lock:
+            waited = time.monotonic() - lock_wait_started
+            if waited >= 0.1:
+                _trace_log(f"[消息队列] request={message_id[-8:]} status=acquired wait={waited:.1f}s")
+            process_started = time.monotonic()
+            process_status = "ok"
+            try:
+                await _process_message_cli(user_id, chat_id, is_group, msg_type, content, message_id, mentions, raw_oc_chat_id, parent_id)
+            except Exception as e:
+                process_status = "failed"
+                _trace_log(
+                    f"[error] request={message_id[-8:]} 消息处理异常: {type(e).__name__}: {e}"
+                )
+                traceback.print_exc(file=sys.stdout)
+                sys.stdout.flush()
+            finally:
+                _trace_log(
+                    f"[消息处理] request={message_id[-8:]} status={process_status} "
+                    f"elapsed={time.monotonic()-process_started:.1f}s"
+                )
+    except asyncio.CancelledError:
+        _trace_log(f"[消息处理] request={message_id[-8:]} status=cancelled")
+        raise
 
 
 async def handle_message_async(event):
@@ -407,6 +431,7 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
     if msg_type == "text":
         text = content.get("text", "").strip() if isinstance(content, dict) else str(content).strip()
         if not text:
+            _trace_log(f"[消息跳过] request={message_id[-8:]} reason=empty_text")
             return
 
         # 群聊去掉 @mention 占位符
@@ -416,6 +441,7 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
                 if key:
                     text = text.replace(key, "").strip()
             if not text:
+                _trace_log(f"[消息跳过] request={message_id[-8:]} reason=mention_only")
                 return
 
         _log_content("文本", text, message_id)
@@ -427,7 +453,11 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
                 content = json.loads(content)
             except Exception:
                 pass
-        print(f"[post debug] type={type(content).__name__} keys={list(content.keys()) if isinstance(content, dict) else 'N/A'}", flush=True)
+        _trace_log(
+            f"[消息解析] request={message_id[-8:]} format=post "
+            f"content_type={type(content).__name__} "
+            f"top_level_keys={','.join(sorted(content)[:12]) if isinstance(content, dict) else '-'}"
+        )
 
         parts = []
         image_keys = []
@@ -483,13 +513,15 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
         if image_keys:
             try:
                 img_path = await feishu.download_image(message_id, image_keys[0])
+                _trace_log(f"[消息附件] request={message_id[-8:]} kind=image status=downloaded count=1")
                 img_desc = f"[用户发送了一张图片，路径：{img_path}，请读取并分析这张图片]"
                 text = f"{text}\n{img_desc}" if text else img_desc
             except Exception as e:
-                print(f"[error] 富文本图片下载失败: {e}", flush=True)
+                _trace_log(f"[error] request={message_id[-8:]} 富文本图片下载失败: {type(e).__name__}: {e}")
 
         # Fallback：如果 post 解析不到文字（比如嵌入式文档卡片），用 API 获取纯文本版本
         if not text:
+            _trace_log(f"[消息解析] request={message_id[-8:]} format=post status=fallback_start")
             try:
                 lark_cli = shutil.which("lark-cli") or "/usr/local/bin/lark-cli"
                 api_cid = raw_oc_chat_id or chat_id.split(":")[0]
@@ -509,22 +541,29 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
                             text = msg.get("content", "")
                             _log_content("post fallback 文本", text, message_id)
                             break
+                _trace_log(
+                    f"[消息解析] request={message_id[-8:]} format=post "
+                    f"fallback={'found' if text else 'not_found'} chars={len(text)}"
+                )
             except Exception as e:
-                print(f"[post fallback] 失败: {e}", flush=True)
+                _trace_log(f"[消息解析] request={message_id[-8:]} format=post fallback_failed {type(e).__name__}: {e}")
 
         if not text:
+            _trace_log(f"[消息跳过] request={message_id[-8:]} reason=empty_post_text")
             return
         _log_content("富文本", text, message_id)
 
     elif msg_type == "image":
         image_key = content.get("image_key", "") if isinstance(content, dict) else ""
         if not image_key:
+            _trace_log(f"[消息跳过] request={message_id[-8:]} reason=missing_image_key")
             return
         try:
             img_path = await feishu.download_image(message_id, image_key)
+            _trace_log(f"[消息附件] request={message_id[-8:]} kind=image status=downloaded count=1")
             text = f"[用户发送了一张图片，路径：{img_path}，请读取并分析这张图片，直接回复用中文]"
         except Exception as e:
-            print(f"[error] 下载图片失败: {e}", flush=True)
+            _trace_log(f"[error] request={message_id[-8:]} 图片下载失败: {type(e).__name__}: {e}")
             if is_group:
                 try:
                     await feishu.reply_card(message_id, content=f"❌ 下载图片失败：{e}", loading=False)
@@ -600,9 +639,13 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
     parsed = parse_command(text)
     if parsed:
         cmd, args = parsed
-        print(f"[cmd] 执行命令 {cmd}", flush=True)
+        command_started = time.monotonic()
+        _trace_log(f"[命令] request={message_id[-8:]} name={cmd} status=started")
         reply = await handle_command(cmd, args, user_id, chat_id, store)
-        print(f"[cmd] 命令返回 type={type(reply).__name__}", flush=True)
+        _trace_log(
+            f"[命令] request={message_id[-8:]} name={cmd} status=handled "
+            f"reply_type={type(reply).__name__} elapsed={time.monotonic()-command_started:.1f}s"
+        )
         if reply is not None:
             if isinstance(reply, dict):
                 reply_text, reply_buttons = reply["text"], reply.get("buttons", [])
@@ -646,7 +689,11 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
         _trace_log(f"[reaction] message={message_id[-8:]} status=error {type(e).__name__}: {e}")
 
     session = await store.get_current(user_id, chat_id)
-    _trace_log(f"[Codex 会话] request={message_id[-8:]} resumed={bool(session.session_id)} model={session.model}")
+    _trace_log(
+        f"[Codex 会话] request={message_id[-8:]} status=loaded "
+        f"resumed={bool(session.session_id)} model={session.model} "
+        f"permission_mode={session.permission_mode}"
+    )
 
     try:
         card_msg_id = await feishu.reply_card(message_id, loading=True)
