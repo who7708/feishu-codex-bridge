@@ -101,6 +101,10 @@ def test_run_codex_builds_new_exec_command(monkeypatch):
     assert "--dangerously-bypass-approvals-and-sandbox" in captured["args"]
     assert "-m" in captured["args"]
     assert "gpt-5.5" in captured["args"]
+    assert "mcp_servers.feishu_ticket_db.enabled=true" in captured["args"]
+    assert any("mcp_servers.feishu_ticket_db.command=" in arg for arg in captured["args"])
+    assert any("mcp_servers.feishu_ticket_db.args=" in arg for arg in captured["args"])
+    assert captured["kwargs"]["env"]["TICKET_DB_CONFIG_DIR"]
     assert proc.stdin.buffer == b"hi\n"
     assert proc.stdin.closed is True
 

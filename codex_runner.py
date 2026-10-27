@@ -9,10 +9,11 @@ The bridge reuses the user's existing Codex login and local ~/.codex state.
 import asyncio
 import json
 import os
+import sys
 import tempfile
 from typing import Callable, Optional
 
-from bot_config import CODEX_CLI, DEFAULT_MODE
+from bot_config import CODEX_CLI, DEFAULT_MODE, TICKET_DB_CONFIG_DIR, TICKET_MCP_SERVER
 
 IDLE_TIMEOUT = 900
 
@@ -94,6 +95,21 @@ def _permission_args(mode: Optional[str]) -> list[str]:
     return ["--sandbox", "read-only"]
 
 
+def _ticket_mcp_args() -> list[str]:
+    """仅为当前 Codex 调用注册项目自带的只读票务 MCP，不写用户全局配置。"""
+    def toml_literal(value: str) -> str:
+        normalized = value.replace("\\", "/")
+        if "'''" in normalized:
+            raise ValueError("票务 MCP 启动路径包含不支持的字符")
+        return f"'''{normalized}'''"
+
+    return [
+        "--config", f"mcp_servers.feishu_ticket_db.command={toml_literal(sys.executable)}",
+        "--config", f"mcp_servers.feishu_ticket_db.args=[{toml_literal(TICKET_MCP_SERVER)}]",
+        "--config", "mcp_servers.feishu_ticket_db.enabled=true",
+    ]
+
+
 def _format_error(stderr_text: str) -> str:
     if "Codex cannot access session files" in stderr_text or ".codex/sessions" in stderr_text:
         return (
@@ -136,6 +152,7 @@ async def run_codex(
     if session_id:
         cmd += ["resume"]
     cmd += ["--json", "--skip-git-repo-check"]
+    cmd += _ticket_mcp_args()
     if session_id:
         cmd += [session_id]
     cmd += ["--output-last-message", output_path]
@@ -148,12 +165,15 @@ async def run_codex(
         cmd += ["--image", image]
     cmd += ["-"]
 
+    child_env = os.environ.copy()
+    child_env["TICKET_DB_CONFIG_DIR"] = TICKET_DB_CONFIG_DIR
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd or os.path.expanduser("~"),
+        env=child_env,
         limit=10 * 1024 * 1024,
     )
 
