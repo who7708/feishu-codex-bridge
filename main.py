@@ -1081,6 +1081,33 @@ async def _run_and_display(
     except Exception as e:
         if active_run.stop_requested:
             return
+        if "Custom tool call output is missing for call id:" in str(e):
+            session_reset = False
+            try:
+                current = await store.get_current_raw(user_id, chat_id)
+                if current.get("session_id"):
+                    # 仅对此类明确的历史损坏错误切换会话，不自动重跑以免重复执行工具操作。
+                    await store.new_session(user_id, chat_id)
+                    session_reset = True
+            except Exception as reset_error:
+                _trace_log(
+                    f"[Codex 会话恢复] request={request_id} session_reset_failed "
+                    f"{type(reset_error).__name__}: {reset_error}"
+                )
+            if session_reset:
+                notice = (
+                    "⚠️ Codex 发现旧会话的工具调用记录不完整，已自动归档旧会话并切换到新会话。"
+                    "本次请求未自动重试；请重新发送问题，必要时补充依赖的上下文。"
+                )
+                _trace_log(f"[Codex 会话恢复] request={request_id} broken_tool_history=true session_reset=true")
+                try:
+                    await feishu.update_card(card_msg_id, notice)
+                except Exception as notice_error:
+                    _trace_log(
+                        f"[Codex 会话恢复] request={request_id} notice_update_failed "
+                        f"{type(notice_error).__name__}: {notice_error}"
+                    )
+                return
         _trace_log(
             f"[error] request={request_id} Codex 运行失败 elapsed={time.monotonic()-started_at:.1f}s "
             f"{type(e).__name__}: {e}"

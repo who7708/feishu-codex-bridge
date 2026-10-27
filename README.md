@@ -115,7 +115,7 @@ python main.py
 | `/resume <序号或session_id>` | 恢复指定 session |
 | `/stop` | 停止当前任务 |
 | `/status` | 查看当前 session、模型、目录和模式 |
-| `/model latest` | 切换模型别名或完整模型名 |
+| `/model latest` | 切换模型别名或完整模型名；GPT 模型 ID 自动规范为小写 |
 | `/mode plan` | 规划模式 |
 | `/mode workspace` | 工作区自动模式 |
 | `/mode danger` | 全权限自动模式，高风险 |
@@ -166,7 +166,7 @@ flowchart LR
 
 ## 票务只读查询工具
 
-普通飞书消息由 Codex 按需调用本项目内置的只读 MCP 工具；最终汇总继续通过现有飞书卡片回复。工具通过 `TICKET_DB_CONFIG_DIR` 定位数据库环境文件，未配置时使用 `DEFAULT_CWD`。支持的环境文件为 `.env.qa.sr`、`.env.qad.sr`、`.env.prod.sr`、`.env.jiushi.sr` 和 `.env.test`。每次查询必须明确指定环境；不要把不同环境的连接信息或密钥混用。
+普通飞书消息由 Codex 按需调用本项目内置的只读 MCP 工具；最终汇总继续通过现有飞书卡片回复。工具通过 `TICKET_DB_CONFIG_DIR` 定位数据库环境文件，未配置时使用 `DEFAULT_CWD`。支持的环境文件为 `.env.qa.sr`、`.env.qad.sr`、`.env.prod.sr`、`.env.jiushi.sr` 和 `.env.test`。查询未明确指定环境时默认使用 `prod`；用户明确指定 `qa`、`qad`、`jiushi` 或 `test` 时使用对应环境。不要把不同环境的连接信息或密钥混用。
 
 工具包含节目、票务、实时核验规则、场次票价、节目入口、授权码及其绑定范围查询。数据库查询使用固定参数化 SQL 和只读事务，不提供任意 SQL 工具。具体票查询可指定 `atTime` 计算核验结果。证件号 `id_no_key` 的服务端哈希算法尚未验证，因此暂不支持按证件号查票；请用票号、票码或实名加节目条件。
 

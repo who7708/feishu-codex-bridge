@@ -588,7 +588,11 @@ async def handle_command(
         if not args:
             cur = await store.get_current(user_id, chat_id)
             return f"当前模型：`{cur.model}`\n可用：latest / mini / codex / spark 或完整模型 ID"
-        model = MODEL_ALIASES.get(args.lower(), args)
+        requested_model = args.strip()
+        model = MODEL_ALIASES.get(requested_model.casefold())
+        if model is None:
+            # OpenAI GPT 模型 ID 使用小写；别名之外的 GPT ID 也按规范形式传给 CLI。
+            model = requested_model.casefold() if requested_model.casefold().startswith("gpt-") else requested_model
         await store.set_model(user_id, chat_id, model)
         return f"✅ 已切换模型为 `{model}`"
 

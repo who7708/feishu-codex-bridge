@@ -10,12 +10,15 @@ from ticket_db import TicketDatabase, safe_tool_call
 
 Environment = Literal["qa", "qad", "prod", "jiushi", "test"]
 database = TicketDatabase()
-mcp = FastMCP("feishu-ticket-readonly")
+mcp = FastMCP(
+    "feishu-ticket-readonly",
+    instructions="票务查询未指定环境时默认使用 prod；用户明确指定其他环境时按指定环境查询。",
+)
 
 
 @mcp.tool()
 def query_show_information(
-    environment: Environment,
+    environment: Environment = "prod",
     acShowId: str | None = None,
     showCode: str | None = None,
     acShowName: str | None = None,
@@ -29,7 +32,7 @@ def query_show_information(
 
 @mcp.tool()
 def query_ticket_information(
-    environment: Environment,
+    environment: Environment = "prod",
     ticketNo: str | None = None,
     stockCode: str | None = None,
     realName: str | None = None,
@@ -49,7 +52,7 @@ def query_ticket_information(
 
 
 @mcp.tool()
-def query_ticket_entrances(environment: Environment, ticketNo: str) -> dict:
+def query_ticket_entrances(ticketNo: str, environment: Environment = "prod") -> dict:
     """按票号只读查询该票绑定授权码及授权码实际绑定入口；同时列出最近最多 10 条成功核验入口记录。"""
     return safe_tool_call(
         "query_ticket_entrances", database.query_ticket_entrances,
@@ -59,7 +62,7 @@ def query_ticket_entrances(environment: Environment, ticketNo: str) -> dict:
 
 @mcp.tool()
 def query_verification_rules(
-    environment: Environment,
+    environment: Environment = "prod",
     acShowId: str | None = None,
     seatPlanId: str | None = None,
     acShowSessionId: str | None = None,
@@ -75,7 +78,7 @@ def query_verification_rules(
 
 @mcp.tool()
 def query_session_seat_plans(
-    environment: Environment,
+    environment: Environment = "prod",
     seatPlanId: str | None = None,
     acShowSessionId: str | None = None,
 ) -> dict:
@@ -88,7 +91,7 @@ def query_session_seat_plans(
 
 @mcp.tool()
 def query_show_entrances(
-    environment: Environment,
+    environment: Environment = "prod",
     acShowId: str | None = None,
     showCode: str | None = None,
 ) -> dict:
@@ -101,7 +104,7 @@ def query_show_entrances(
 
 @mcp.tool()
 def query_ac_auth_code_information(
-    environment: Environment,
+    environment: Environment = "prod",
     acAuthCode: str | None = None,
     acAuthCodeId: str | None = None,
 ) -> dict:
@@ -114,7 +117,7 @@ def query_ac_auth_code_information(
 
 @mcp.tool()
 def query_ac_auth_code_bindings(
-    environment: Environment,
+    environment: Environment = "prod",
     acAuthCode: str | None = None,
     acAuthCodeId: str | None = None,
 ) -> dict:
@@ -127,7 +130,7 @@ def query_ac_auth_code_bindings(
 
 @mcp.tool()
 def query_ac_auth_code_bound_seat_plans(
-    environment: Environment,
+    environment: Environment = "prod",
     acAuthCode: str | None = None,
     acAuthCodeId: str | None = None,
 ) -> dict:
@@ -140,7 +143,7 @@ def query_ac_auth_code_bound_seat_plans(
 
 @mcp.tool()
 def query_ac_auth_code_bound_entrances(
-    environment: Environment,
+    environment: Environment = "prod",
     acAuthCode: str | None = None,
     acAuthCodeId: str | None = None,
 ) -> dict:
@@ -152,7 +155,7 @@ def query_ac_auth_code_bound_entrances(
 
 
 @mcp.tool()
-def query_seat_plan_bound_auth_codes(environment: Environment, seatPlanId: str) -> dict:
+def query_seat_plan_bound_auth_codes(seatPlanId: str, environment: Environment = "prod") -> dict:
     """按 ac_seat_plan.id 反查实际绑定的有效授权码；seatPlanId 不是票价名称或场次 ID。"""
     return safe_tool_call(
         "query_seat_plan_bound_auth_codes", database.query_seat_plan_auth_codes,
