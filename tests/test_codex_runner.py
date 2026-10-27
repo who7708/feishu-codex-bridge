@@ -52,6 +52,7 @@ class FakeStderr:
 
 class FakeProc:
     def __init__(self, stdout_lines: list[bytes], stderr: bytes = b"", returncode: int = 0):
+        self.pid = 1234
         self.stdin = FakeStdin()
         self.stdout = FakeStdout(stdout_lines)
         self.stderr = FakeStderr(stderr)
@@ -132,7 +133,7 @@ def test_run_codex_builds_resume_command(monkeypatch):
     assert "sid_old" in captured["args"]
 
 
-def test_run_codex_streams_text_and_tool_callbacks(monkeypatch):
+def test_run_codex_streams_text_and_tool_callbacks(monkeypatch, capsys):
     proc = FakeProc([
         b'{"type":"session_meta","payload":{"id":"sid_1"}}\n',
         b'{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"ls\\"}"}}\n',
@@ -162,6 +163,9 @@ def test_run_codex_streams_text_and_tool_callbacks(monkeypatch):
     assert tools == [("exec_command", {"cmd": "ls"})]
     assert text == "Hello world"
     assert session_id == "sid_1"
+    logged = capsys.readouterr().out
+    assert "type=response_item" in logged
+    assert "Hello" not in logged
 
 
 def test_run_codex_passes_images(monkeypatch):

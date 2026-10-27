@@ -92,6 +92,27 @@ _install_fake_lark()
 import main
 
 
+def test_conversation_content_is_not_logged_by_default(monkeypatch, capsys):
+    monkeypatch.setattr(main.config, "LOG_CONVERSATION_CONTENT", False)
+
+    main._log_content("文本", "sensitive query", "message-12345678")
+
+    logged = capsys.readouterr().out
+    assert "request=12345678" in logged
+    assert "chars=15" in logged
+    assert "sensitive query" not in logged
+
+
+def test_conversation_content_logging_is_truncated_and_escaped(monkeypatch, capsys):
+    monkeypatch.setattr(main.config, "LOG_CONVERSATION_CONTENT", True)
+
+    main._log_content("文本", "line1\n" + "x" * 600, "message-12345678")
+
+    logged = capsys.readouterr().out
+    assert r"line1\\n" in logged
+    assert "x" * 501 not in logged
+
+
 class MainStopTests(unittest.IsolatedAsyncioTestCase):
     async def test_handle_stop_command_returns_no_active_run_message(self):
         with mock.patch.object(main, "stop_run", mock.AsyncMock(return_value=False)):

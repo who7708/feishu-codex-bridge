@@ -11,11 +11,16 @@ import json
 import os
 import sys
 import tempfile
+import time
 from typing import Callable, Optional
 
 from bot_config import CODEX_CLI, DEFAULT_MODE, TICKET_DB_CONFIG_DIR, TICKET_MCP_SERVER
 
 IDLE_TIMEOUT = 900
+
+
+def _trace_log(message: str):
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
 
 
 def _extract_text_content(value) -> str:
@@ -178,6 +183,10 @@ async def run_codex(
     )
 
     await _fire_callback(on_process_start, proc)
+    started_at = asyncio.get_running_loop().time()
+    last_stdout_at = started_at
+    next_wait_log_at = started_at + min(15, IDLE_TIMEOUT)
+    _trace_log(f"[Codex 子进程] 已启动 pid={proc.pid}")
 
     proc.stdin.write((message + "\n").encode())
     await proc.stdin.drain()
@@ -189,21 +198,48 @@ async def run_codex(
     try:
         while True:
             try:
-                raw_line = await asyncio.wait_for(proc.stdout.readline(), timeout=IDLE_TIMEOUT)
+                now = asyncio.get_running_loop().time()
+                idle_for = now - last_stdout_at
+                remaining = IDLE_TIMEOUT - idle_for
+                raw_line = await asyncio.wait_for(
+                    proc.stdout.readline(), timeout=min(15, max(0.1, remaining))
+                )
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                raise RuntimeError(f"Codex 执行超时（{IDLE_TIMEOUT}秒无输出），已终止进程")
+                now = asyncio.get_running_loop().time()
+                idle_for = now - last_stdout_at
+                if idle_for >= IDLE_TIMEOUT:
+                    proc.kill()
+                    await proc.wait()
+                    _trace_log(
+                        f"[Codex 子进程] 空闲超时 pid={proc.pid} idle={idle_for:.0f}s，已终止",
+                    )
+                    raise RuntimeError(f"Codex 执行超时（{IDLE_TIMEOUT}秒无输出），已终止进程")
+                if now >= next_wait_log_at:
+                    _trace_log(
+                        f"[Codex 子进程] 仍在运行 pid={proc.pid} elapsed={now-started_at:.0f}s "
+                        f"stdout_idle={idle_for:.0f}s"
+                    )
+                    next_wait_log_at = now + 15
+                continue
 
             if not raw_line:
                 break
+            last_stdout_at = asyncio.get_running_loop().time()
             line = raw_line.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
+                _trace_log(f"[Codex 子进程] 忽略非 JSON 输出 pid={proc.pid} chars={len(line)}")
                 continue
+
+            payload = data.get("payload", data)
+            event_type = data.get("type", "unknown")
+            item_type = payload.get("type", "") if isinstance(payload, dict) else ""
+            _trace_log(
+                f"[Codex 事件] pid={proc.pid} type={event_type} item={item_type or '-'}",
+            )
 
             sid = _extract_session_id(data)
             if sid:
@@ -221,6 +257,11 @@ async def run_codex(
         stderr_output = await proc.stderr.read()
         await proc.wait()
         stderr_text = stderr_output.decode("utf-8", errors="replace").strip()
+        _trace_log(
+            f"[Codex 子进程] 退出 pid={proc.pid} code={proc.returncode} "
+            f"elapsed={asyncio.get_running_loop().time()-started_at:.1f}s "
+            f"stderr_chars={len(stderr_text)}"
+        )
 
         final_text = ""
         try:

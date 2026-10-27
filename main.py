@@ -64,6 +64,19 @@ _last_event = time.time()
 _wake_event = threading.Event()  # 被设置时，事件循环立即杀掉 WebSocket 连接触发重连
 
 
+def _trace_log(message: str):
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
+def _log_content(label: str, content: str, message_id: str = ""):
+    """默认只写长度与关联 ID；需核对原文时由本机显式开启受限预览。"""
+    request_id = message_id[-8:] if message_id else "-"
+    _trace_log(f"[{label}] request={request_id} chars={len(content)}")
+    if config.LOG_CONVERSATION_CONTENT:
+        preview = content[:500].replace("\r", "\\r").replace("\n", "\\n")
+        _trace_log(f"[{label}内容] request={request_id} {preview!r}")
+
+
 def _watchdog():
     """后台线程：
     1. 定期打印运行状态。
@@ -227,8 +240,10 @@ async def handle_message_from_cli(evt: dict):
     if is_group and topic_id:
         chat_id = f"{chat_id}:{topic_id}"
 
-    print(f"[收到消息] type={msg_type} chat={chat_type}" + (f" topic={topic_id[:16]}" if topic_id else ""), flush=True)
-    print(f"[Chat Info] user={user_id[:8]}... chat={chat_id[:8]}... is_group={is_group}", flush=True)
+    _trace_log(
+        f"[收到消息] request={message_id[-8:]} type={msg_type} chat_type={chat_type} "
+        f"is_group={is_group} topic={bool(topic_id)}"
+    )
 
     # 解析 content（可能是 JSON 字符串）
     if isinstance(content, str):
@@ -288,7 +303,7 @@ async def handle_message_async(event):
 
 async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, message_id, mentions, raw_oc_chat_id=""):
     """处理消息内容"""
-    print(f"[处理消息] user={user_id[:8]}... chat={chat_id[:8]}... is_group={is_group}", flush=True)
+    _trace_log(f"[处理消息] request={message_id[-8:]} type={msg_type} is_group={is_group}")
     text = ""
 
     if msg_type == "text":
@@ -305,7 +320,7 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
             if not text:
                 return
 
-        print(f"[文本] {text[:50]}", flush=True)
+        _log_content("文本", text, message_id)
 
     elif msg_type == "post":
         # 富文本消息：提取文本和图片
@@ -394,14 +409,14 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
                     for msg in list_data.get("data", {}).get("messages", []):
                         if msg.get("message_id") == message_id:
                             text = msg.get("content", "")
-                            print(f"[post fallback] 从 API 获取文本: {text[:80]}", flush=True)
+                            _log_content("post fallback 文本", text, message_id)
                             break
             except Exception as e:
                 print(f"[post fallback] 失败: {e}", flush=True)
 
         if not text:
             return
-        print(f"[富文本] {text[:80]}", flush=True)
+        _log_content("富文本", text, message_id)
 
     elif msg_type == "image":
         image_key = content.get("image_key", "") if isinstance(content, dict) else ""
@@ -426,14 +441,14 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
         try:
             lark_cli = shutil.which("lark-cli") or "/usr/local/bin/lark-cli"
             api_chat_id = raw_oc_chat_id or chat_id.split(":")[0]
-            print(f"[转发debug] raw_oc_chat_id={raw_oc_chat_id} chat_id={chat_id} api_chat_id={api_chat_id} message_id={message_id}", flush=True)
+            print(f"[转发debug] request={message_id[-8:]} group={bool(api_chat_id and 'oc_' in api_chat_id)}", flush=True)
 
             if api_chat_id and "oc_" in api_chat_id:
                 list_args = ["--chat-id", api_chat_id.split(":")[0], "--as", "bot"]
             else:
                 list_args = ["--user-id", user_id, "--as", "user"]
 
-            print(f"[转发debug] list_args={list_args}", flush=True)
+            print(f"[转发debug] request={message_id[-8:]} scope={'chat' if '--chat-id' in list_args else 'user'}", flush=True)
 
             result = await asyncio.create_subprocess_exec(
                 lark_cli, "im", "+chat-messages-list",
@@ -446,7 +461,7 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
             fwd_content = ""
 
             if stderr:
-                print(f"[转发debug] stderr={stderr.decode()[:200]}", flush=True)
+                print(f"[转发debug] request={message_id[-8:]} stderr_chars={len(stderr)}", flush=True)
 
             if stdout:
                 raw_out = stdout.decode()
@@ -463,7 +478,7 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
                             print(f"[转发debug] 匹配！content长度={len(fwd_content)}", flush=True)
                             break
                 except Exception as e:
-                    print(f"[转发debug] JSON解析失败: {e}, raw={raw_out[:200]}", flush=True)
+                    print(f"[转发debug] JSON解析失败: {type(e).__name__}: {e}; raw_chars={len(raw_out)}", flush=True)
             else:
                 print(f"[转发debug] stdout为空", flush=True)
 
@@ -474,7 +489,7 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
                     fwd_content = content
 
             text = f"[用户转发了一段聊天记录，内容如下：]\n{fwd_content}"
-            print(f"[转发] {text[:200]}", flush=True)
+            _log_content("转发内容", text, message_id)
         except Exception as e:
             print(f"[error] 处理转发消息失败: {e}", flush=True)
             text = f"[用户转发了一段聊天记录，但无法读取内容: {e}]"
@@ -515,15 +530,15 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
     try:
         instinct = _pick_instinct_reaction(text)
         await _add_reaction(message_id, instinct)
-    except Exception:
-        pass
+    except Exception as e:
+        _trace_log(f"[reaction] message={message_id[-8:]} status=error {type(e).__name__}: {e}")
 
     session = await store.get_current(user_id, chat_id)
-    print(f"[Codex] session={session.session_id} model={session.model}", flush=True)
+    _trace_log(f"[Codex 会话] request={message_id[-8:]} resumed={bool(session.session_id)} model={session.model}")
 
     try:
         card_msg_id = await feishu.reply_card(message_id, loading=True)
-        print(f"[卡片] card_msg_id={card_msg_id}", flush=True)
+        print(f"[卡片] request={message_id[-8:]} placeholder_sent={bool(card_msg_id)}", flush=True)
     except Exception as e:
         print(f"[error] 发送占位卡片失败: {e}", flush=True)
         try:
@@ -836,12 +851,17 @@ async def _run_and_display(
 ):
     """调用 Codex 并流式展示结果，检测选项时附加按钮。"""
     active_run = _active_runs.start_run(user_id, card_msg_id, chat_id=chat_id)
+    request_id = notify_msg_id[-8:] if notify_msg_id else card_msg_id[-8:]
+    started_at = time.monotonic()
 
     accumulated = ""
     tool_history: list[str] = []
     ask_options: list[tuple[str, str]] = []
     plan_exited = False
     last_push_time = 0.0
+    last_progress_log = started_at
+    output_chunks = 0
+    output_chars = 0
     push_failures = 0
     _PUSH_INTERVAL = 0.4
     _MAX_STREAM_DISPLAY = 2500
@@ -875,6 +895,9 @@ async def _run_and_display(
         if name.lower() == "exitplanmode":
             plan_exited = True
             return
+        _trace_log(
+            f"[Codex 工具] request={request_id} name={name} arg_keys={','.join(sorted(inp)[:20])}",
+        )
         if name.lower() == "enterplanmode":
             if session.permission_mode != "plan":
                 print(f"[Plan] EnterPlanMode 检测到，切换为 plan", flush=True)
@@ -907,15 +930,27 @@ async def _run_and_display(
         last_push_time = time.time()
 
     async def on_text_chunk(chunk: str):
-        nonlocal accumulated, last_push_time
+        nonlocal accumulated, last_push_time, last_progress_log, output_chunks, output_chars
         accumulated += chunk
+        output_chunks += 1
+        output_chars += len(chunk)
         now = time.time()
+        monotonic_now = time.monotonic()
+        if monotonic_now - last_progress_log >= 5:
+            _trace_log(
+                f"[Codex 输出进度] request={request_id} elapsed={monotonic_now-started_at:.1f}s "
+                f"chunks={output_chunks} chars={output_chars}"
+            )
+            last_progress_log = monotonic_now
         if now - last_push_time >= _PUSH_INTERVAL:
             await push(_build_display())
             last_push_time = now
 
     try:
-        print(f"[run_codex] 开始调用...", flush=True)
+        _trace_log(
+            f"[run_codex] request={request_id} 开始 model={session.model} "
+            f"resume={bool(session.session_id)} prompt_chars={len(text)}"
+        )
         image_paths = _extract_image_paths(text)
         full_text, new_session_id, used_fresh_session_fallback = await run_codex(
             message=text,
@@ -926,13 +961,23 @@ async def _run_and_display(
             images=image_paths,
             on_text_chunk=on_text_chunk,
             on_tool_use=on_tool_use,
-            on_process_start=lambda proc: _active_runs.attach_process(user_id, proc, chat_id=chat_id),
+            on_process_start=lambda proc: (
+                _active_runs.attach_process(user_id, proc, chat_id=chat_id),
+                _trace_log(f"[Codex 进程] request={request_id} pid={proc.pid}"),
+            ),
         )
-        print(f"[run_codex] 完成, session={new_session_id}", flush=True)
+        _trace_log(
+            f"[run_codex] request={request_id} 完成 elapsed={time.monotonic()-started_at:.1f}s "
+            f"chunks={output_chunks} streamed_chars={output_chars} final_chars={len(full_text)} "
+            f"session={new_session_id}"
+        )
     except Exception as e:
         if active_run.stop_requested:
             return
-        print(f"[error] Codex 运行失败: {type(e).__name__}: {e}", flush=True)
+        _trace_log(
+            f"[error] request={request_id} Codex 运行失败 elapsed={time.monotonic()-started_at:.1f}s "
+            f"{type(e).__name__}: {e}"
+        )
         traceback.print_exc()
         try:
             await feishu.update_card(card_msg_id, f"❌ Codex 执行出错：{type(e).__name__}: {e}")
@@ -943,6 +988,9 @@ async def _run_and_display(
         _active_runs.clear_run(user_id, active_run, chat_id=chat_id)
 
     final = full_text or accumulated or "（无输出）"
+    if config.LOG_CONVERSATION_CONTENT:
+        safe_preview = final[:2000].replace("\r", "\\r").replace("\n", "\\n")
+        _trace_log(f"[Codex 输出内容] request={request_id} {safe_preview!r}")
     if used_fresh_session_fallback:
         final = "⚠️ 检测到工作目录已变化，旧会话无法继续。本次已自动切换到新 session。\n\n" + final
     options = _extract_options(final) or ask_options
@@ -953,10 +1001,12 @@ async def _run_and_display(
                 for display, value in options
             ]
             await feishu.update_card_with_buttons(card_msg_id, final, buttons)
+            _trace_log(f"[卡片更新] request={request_id} status=ok buttons={len(buttons)}")
         else:
             await feishu.update_card(card_msg_id, final)
+            _trace_log(f"[卡片更新] request={request_id} status=ok chars={len(final)}")
     except Exception as e:
-        print(f"[error] 卡片更新失败，回退发文本: {e}", flush=True)
+        print(f"[error] request={request_id} 卡片更新失败，回退发文本: {e}", flush=True)
         try:
             if is_group and notify_msg_id:
                 await feishu.reply_card(notify_msg_id, content=final, loading=False)
@@ -1114,7 +1164,9 @@ async def _add_reaction(message_id: str, emoji_type: str):
     )
     await proc.wait()
     if proc.returncode == 0:
-        print(f"[reaction] {emoji_type} → {message_id[:16]}...", flush=True)
+        _trace_log(f"[reaction] message={message_id[-8:]} emoji={emoji_type} status=ok")
+    else:
+        _trace_log(f"[reaction] message={message_id[-8:]} status=failed exit={proc.returncode}")
 
 
 def _extract_options(text: str) -> list[tuple[str, str]]:
@@ -1195,6 +1247,8 @@ def _handle_task_exception(task):
     exc = task.exception()
     if exc:
         print(f"[error] 未处理的 task 异常: {type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stdout)
+        sys.stdout.flush()
 
 
 # ── lark-cli 事件循环 ────────────────────────────────────────
@@ -1266,6 +1320,8 @@ async def _event_reader(proc):
         # 判断事件类型（兼容 raw 和 compact 格式）
         header = evt.get("header", {})
         event_type = header.get("event_type", "") or evt.get("event_type", evt.get("type", ""))
+        event_id = header.get("event_id", "")
+        _trace_log(f"[事件分发] type={event_type or 'unknown'} event={event_id[-8:] if event_id else '-'}")
 
         if "card.action" in event_type or evt.get("action"):
             _safe_create_task(handle_card_action_from_cli(evt))
@@ -1274,7 +1330,7 @@ async def _event_reader(proc):
         elif "im.message" in event_type or evt.get("message_id") or (evt.get("event", {}).get("message")):
             _safe_create_task(handle_message_from_cli(evt))
         else:
-            print(f"[lark-cli] 跳过事件: {json.dumps(evt, ensure_ascii=False)[:200]}", flush=True)
+            print(f"[lark-cli] 跳过事件 type={event_type or 'unknown'} keys={','.join(sorted(evt)[:20])}", flush=True)
 
 
 def _kill_process_tree(proc):
@@ -1401,13 +1457,13 @@ async def run_lark_cli_loop():
                         line = line.strip()
                         if not line or "SDK Info" in line:
                             continue
-                        print(f"[lark-cli stderr] {line}", flush=True)
+                        _trace_log(f"[lark-cli stderr] {line}")
                         if "connection reset" in line.lower() or "broken pipe" in line.lower():
                             print("[lark-cli] ⚠️ 检测到连接断开，立即重启", flush=True)
                             _kill_process_tree(proc)
                             return
                 except Exception as e:
-                    print(f"[lark-cli stderr reader] error: {type(e).__name__}: {e}", flush=True)
+                    _trace_log(f"[lark-cli stderr reader] error: {type(e).__name__}: {e}")
             threading.Thread(target=_stderr_reader, daemon=True).start()
 
             # 等一下看有没有立即报错（进程直接退出）
