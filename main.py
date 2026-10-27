@@ -1286,6 +1286,27 @@ def _kill_process_tree(proc):
     everything.
     """
     import signal
+    if os.name == "nt":
+        # Windows 没有 POSIX process group；用 taskkill /T 清理 lark-cli 派生进程。
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass
+        return
+
     pgid = None
     try:
         pgid = os.getpgid(proc.pid)
@@ -1336,7 +1357,14 @@ async def run_lark_cli_loop():
     """
     lark_cli = "/usr/local/bin/lark-cli"
     if not os.path.exists(lark_cli):
-        lark_cli = shutil.which("lark-cli") or "lark-cli"
+        lark_cli = shutil.which("lark-cli")
+    if not lark_cli:
+        print(
+            "[lark-cli] 未找到可执行文件。请安装 @larksuite/cli，并确认 lark-cli 在 PATH 中；"
+            "Windows 可在新终端运行 `where lark-cli` 检查。",
+            flush=True,
+        )
+        return
     cmd = [
         lark_cli, "event", "+subscribe",
         "--as", "bot",
@@ -1354,12 +1382,15 @@ async def run_lark_cli_loop():
         await asyncio.to_thread(_cleanup_stale_processes)
 
         print("[lark-cli] 启动事件订阅...", flush=True)
+        proc = None
         try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 start_new_session=True,
             )
 
@@ -1396,12 +1427,11 @@ async def run_lark_cli_loop():
             print(f"[lark-cli] 异常: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc(file=sys.stdout)
             sys.stdout.flush()
+        finally:
+            # 取消事件循环（例如 Ctrl+C）时也要清理 lark-cli 及其子进程。
+            if proc is not None:
+                _kill_process_tree(proc)
 
-        # Clean up the process tree (not just the parent!) before reconnecting.
-        # This is the critical fix: without process group kill, Node.js children
-        # survive and hold the WebSocket connection open, causing the next
-        # lark-cli instance to either be rejected or lose events.
-        _kill_process_tree(proc)
         print("[lark-cli] 10秒后重连...", flush=True)
         await asyncio.sleep(10)
 
@@ -1460,7 +1490,10 @@ def main():
     t.start()
 
     # 运行 asyncio 事件循环
-    asyncio.run(run_lark_cli_loop())
+    try:
+        asyncio.run(run_lark_cli_loop())
+    except KeyboardInterrupt:
+        print("\n🛑 飞书 Codex Bot 已停止。", flush=True)
 
 
 if __name__ == "__main__":
