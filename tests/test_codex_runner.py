@@ -72,7 +72,7 @@ class FakeProc:
 
 def test_run_codex_builds_new_exec_command(monkeypatch):
     proc = FakeProc([
-        b'{"type":"session_meta","payload":{"id":"sid_123"}}\n',
+        b'{"type":"thread.started","thread_id":"sid_123"}\n',
         b'{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}}\n',
     ])
     captured = {}
@@ -116,6 +116,7 @@ def test_run_codex_builds_resume_command(monkeypatch):
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         captured["args"] = args
+        captured["kwargs"] = kwargs
         output_file = args[args.index("--output-last-message") + 1]
         with open(output_file, "w", encoding="utf-8") as f:
             f.write("resumed answer")
@@ -124,13 +125,62 @@ def test_run_codex_builds_resume_command(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr("codex_runner.CODEX_CLI", "codex")
 
-    text, session_id, _ = asyncio.run(run_codex("continue", session_id="sid_old"))
+    text, session_id, _ = asyncio.run(
+        run_codex("continue", session_id="sid_old", cwd="/tmp/resume-project")
+    )
 
     assert text == "resumed answer"
     assert session_id == "sid_old"
     assert captured["args"][:4] == ("codex", "exec", "resume", "--json")
     assert "--skip-git-repo-check" in captured["args"]
     assert "sid_old" in captured["args"]
+    assert "-C" not in captured["args"]
+    assert captured["kwargs"]["cwd"] == "/tmp/resume-project"
+    assert "--sandbox" not in captured["args"]
+    assert 'sandbox_mode="read-only"' in captured["args"]
+
+
+def test_permission_args_match_resume_cli_options():
+    from codex_runner import _permission_args
+
+    assert _permission_args("plan", resume=True) == ["--config", 'sandbox_mode="read-only"']
+    assert _permission_args("workspace", resume=True) == ["--config", 'sandbox_mode="workspace-write"']
+    assert _permission_args("danger", resume=True) == ["--dangerously-bypass-approvals-and-sandbox"]
+    assert _permission_args("workspace") == ["--sandbox", "workspace-write"]
+
+
+def test_extract_session_id_supports_thread_started_shapes():
+    from codex_runner import _extract_session_id
+
+    assert _extract_session_id({"type": "thread.started", "thread_id": "sid_top"}) == "sid_top"
+    assert _extract_session_id({
+        "type": "thread.started",
+        "payload": {"type": "thread.started", "thread_id": "sid_payload"},
+    }) == "sid_payload"
+    assert _extract_session_id({
+        "type": "session_meta", "payload": {"id": "sid_legacy"},
+    }) == "sid_legacy"
+    assert _extract_session_id({
+        "type": "response_item", "payload": {"id": "item_id_not_a_session"},
+    }) is None
+
+
+def test_run_codex_persists_thread_id_callback(monkeypatch):
+    proc = FakeProc([b'{"type":"thread.started","thread_id":"sid_early"}\n'])
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    seen = []
+
+    async def save_session_id(session_id):
+        seen.append(session_id)
+
+    _, session_id, _ = asyncio.run(run_codex("hi", on_session_id=save_session_id))
+
+    assert session_id == "sid_early"
+    assert seen == ["sid_early"]
 
 
 def test_run_codex_streams_text_and_tool_callbacks(monkeypatch, capsys):

@@ -50,7 +50,11 @@ def _extract_session_id(data: dict) -> Optional[str]:
     payload = data.get("payload", data)
     if not isinstance(payload, dict):
         return None
-    if data.get("type") == "session_meta" or payload.get("id"):
+    if data.get("type") == "thread.started" or payload.get("type") == "thread.started":
+        thread_id = data.get("thread_id") or payload.get("thread_id")
+        if thread_id:
+            return thread_id
+    if data.get("type") == "session_meta" or payload.get("type") == "session_meta":
         sid = payload.get("id") or payload.get("session_id")
         if sid:
             return sid
@@ -79,7 +83,7 @@ def _extract_tool_call(data: dict) -> tuple[str, dict] | None:
     return (name, args) if name else None
 
 
-def _permission_args(mode: Optional[str]) -> list[str]:
+def _permission_args(mode: Optional[str], resume: bool = False) -> list[str]:
     normalized = (mode or DEFAULT_MODE or "plan").strip()
     aliases = {
         "read-only": "plan",
@@ -91,10 +95,16 @@ def _permission_args(mode: Optional[str]) -> list[str]:
         "dontAsk": "danger",
     }
     normalized = aliases.get(normalized, normalized)
+    if resume:
+        # exec resume 不接受 --sandbox；用同等 sandbox_mode 配置覆盖本次恢复调用。
+        if normalized == "danger":
+            return ["--dangerously-bypass-approvals-and-sandbox"]
+        sandbox_mode = "workspace-write" if normalized == "workspace" else "read-only"
+        return ["--config", f'sandbox_mode="{sandbox_mode}"']
     if normalized == "plan":
         return ["--sandbox", "read-only"]
     if normalized == "workspace":
-        return ["--full-auto"]
+        return ["--sandbox", "workspace-write"]
     if normalized == "danger":
         return ["--dangerously-bypass-approvals-and-sandbox"]
     return ["--sandbox", "read-only"]
@@ -142,6 +152,7 @@ async def run_codex(
     images: Optional[list[str]] = None,
     on_text_chunk: Optional[Callable[[str], None]] = None,
     on_tool_use: Optional[Callable[[str, dict], None]] = None,
+    on_session_id: Optional[Callable[[str], None]] = None,
     on_process_start: Optional[Callable[[asyncio.subprocess.Process], None]] = None,
 ) -> tuple[str, Optional[str], bool]:
     """
@@ -161,10 +172,11 @@ async def run_codex(
     if session_id:
         cmd += [session_id]
     cmd += ["--output-last-message", output_path]
-    cmd += _permission_args(permission_mode)
+    cmd += _permission_args(permission_mode, resume=bool(session_id))
     if model:
         cmd += ["-m", model]
-    if cwd:
+    # resume 子命令不支持 -C/--cd；启动进程的 cwd 已在下方单独设置。
+    if cwd and not session_id:
         cmd += ["-C", cwd]
     for image in images or []:
         cmd += ["--image", image]
@@ -244,6 +256,7 @@ async def run_codex(
             sid = _extract_session_id(data)
             if sid:
                 new_session_id = sid
+                await _fire_callback(on_session_id, sid)
 
             tool_call = _extract_tool_call(data)
             if tool_call:

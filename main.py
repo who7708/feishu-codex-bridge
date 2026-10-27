@@ -190,6 +190,7 @@ async def handle_message_from_cli(evt: dict):
         mentions = msg.get("mentions", [])
         root_id = msg.get("root_id", msg.get("parent_id", ""))
         thread_id = msg.get("thread_id", "")
+        parent_id = msg.get("parent_id", "")
     else:
         # compact 格式
         msg_type = evt.get("message_type", "")
@@ -201,6 +202,7 @@ async def handle_message_from_cli(evt: dict):
         mentions = evt.get("mentions", [])
         root_id = evt.get("root_id", evt.get("parent_id", ""))
         thread_id = evt.get("thread_id", "")
+        parent_id = evt.get("parent_id", evt.get("quoted_message_id", ""))
 
     if not user_id or not message_id:
         return
@@ -235,10 +237,8 @@ async def handle_message_from_cli(evt: dict):
     if not is_group:
         chat_id = user_id
 
-    # 话题群：用 thread_id 或 root_id 区分话题，实现一个话题一个 session
+    # 群会话按群 chat_id 共享；thread/root 只用于识别事件来源，不拆分 Codex 上下文。
     topic_id = thread_id or root_id
-    if is_group and topic_id:
-        chat_id = f"{chat_id}:{topic_id}"
 
     _trace_log(
         f"[收到消息] request={message_id[-8:]} type={msg_type} chat_type={chat_type} "
@@ -278,7 +278,7 @@ async def handle_message_from_cli(evt: dict):
 
     async with lock:
         try:
-            await _process_message_cli(user_id, chat_id, is_group, msg_type, content, message_id, mentions, raw_oc_chat_id)
+            await _process_message_cli(user_id, chat_id, is_group, msg_type, content, message_id, mentions, raw_oc_chat_id, parent_id)
         except Exception as e:
             print(f"[error] 消息处理异常: {type(e).__name__}: {e}", flush=True)
             traceback.print_exc(file=sys.stdout)
@@ -297,11 +297,93 @@ async def handle_message_async(event):
         "message_id": msg.message_id,
         "content": msg.content,
         "mentions": getattr(msg, "mentions", []) or [],
+        "parent_id": getattr(msg, "parent_id", "") or "",
     }
+    if not isinstance(compact["parent_id"], str):
+        compact["parent_id"] = ""
     await handle_message_from_cli(compact)
 
 
-async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, message_id, mentions, raw_oc_chat_id=""):
+def _extract_card_text(content):
+    """从消息内容或卡片 JSON 中提取可读文本，忽略图片等非文本载荷。"""
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return content.strip()
+
+    parts = []
+
+    def visit(value):
+        if isinstance(value, dict):
+            tag = value.get("tag", "")
+            if tag in ("markdown", "text"):
+                text_value = value.get("content", value.get("text", ""))
+                if isinstance(text_value, str) and text_value.strip():
+                    parts.append(text_value.strip())
+                    return
+            if tag == "plain_text":
+                text_value = value.get("content", value.get("text", ""))
+                if isinstance(text_value, str) and text_value.strip():
+                    parts.append(text_value.strip())
+                    return
+            for key, child in value.items():
+                if key in ("text", "content", "elements", "body", "header", "title", "subtitle"):
+                    if key in ("text", "title", "subtitle") and isinstance(child, str) and child.strip():
+                        parts.append(child.strip())
+                        continue
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(content)
+    return "\n".join(parts).strip()
+
+
+async def _fetch_quoted_message_text(parent_id, is_group):
+    """按已知消息 ID 读取被引用卡片；权限不足或消息不可读时返回空串。"""
+    proc = None
+    try:
+        lark_cli = shutil.which("lark-cli") or "/usr/local/bin/lark-cli"
+        identity = "bot" if is_group else "user"
+        proc = await asyncio.create_subprocess_exec(
+            lark_cli, "im", "+messages-mget", "--message-ids", parent_id,
+            "--as", identity, "--format", "json", "--no-reactions",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        if proc.returncode != 0 or not stdout:
+            detail = (
+                stderr.decode("utf-8", errors="replace").strip()
+                or stdout.decode("utf-8", errors="replace").strip()
+            )
+            detail = re.sub(r"(?i)(bearer\s+)\S+", r"\1[REDACTED]", detail)
+            detail = re.sub(r"(?i)(access[_ -]?token[=: ]+)\S+", r"\1[REDACTED]", detail)
+            _trace_log(
+                f"[引用消息] parent={parent_id[-8:]} mget_failed exit={proc.returncode} "
+                f"stderr={detail[:600]!r}"
+            )
+            return ""
+        response = json.loads(stdout.decode("utf-8"))
+        data = response.get("data", {})
+        messages = data.get("items", data.get("messages", []))
+        for item in messages:
+            if item.get("message_id") == parent_id or len(messages) == 1:
+                return _extract_card_text(item.get("content", ""))[:12000]
+        _trace_log(f"[引用消息] parent={parent_id[-8:]} message_not_returned count={len(messages)}")
+    except asyncio.TimeoutError:
+        if proc:
+            proc.kill()
+            await proc.wait()
+        _trace_log(f"[引用消息] parent={parent_id[-8:]} list_timeout")
+    except Exception as exc:
+        _trace_log(f"[引用消息] parent={parent_id[-8:]} read_failed {type(exc).__name__}: {exc}")
+    return ""
+
+
+async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, message_id, mentions, raw_oc_chat_id="", parent_id=""):
     """处理消息内容"""
     _trace_log(f"[处理消息] request={message_id[-8:]} type={msg_type} is_group={is_group}")
     text = ""
@@ -527,6 +609,20 @@ async def _process_message_cli(user_id, chat_id, is_group, msg_type, content, me
 
     # ── 普通消息 → 先 reaction 再调用 Codex ──────────────────
     # 第一反应：根据用户说的话，本能地回一个表情
+    # 引用回复的 parent_id 指向被引用消息；命令已先行处理，避免改变命令解析。
+    if parent_id and msg_type in ("text", "post"):
+        quoted_text = await _fetch_quoted_message_text(
+            parent_id, is_group
+        )
+        if quoted_text:
+            text = f"[引用的飞书消息内容]\n{quoted_text}\n\n[用户当前消息]\n{text}"
+            _log_content("引用消息输入", quoted_text, message_id)
+            # 按排查需求输出完整引用文本；引用内容可能含业务数据，也会进入服务日志。
+            _trace_log(f"[引用卡片正文] request={message_id[-8:]} chars={len(quoted_text)} 内容如下")
+            print(quoted_text, flush=True)
+        else:
+            _trace_log(f"[引用消息] request={message_id[-8:]} parent={parent_id[-8:]} content_unavailable")
+
     try:
         instinct = _pick_instinct_reaction(text)
         await _add_reaction(message_id, instinct)
@@ -862,6 +958,7 @@ async def _run_and_display(
     last_progress_log = started_at
     output_chunks = 0
     output_chars = 0
+    session_id_persisted = False
     push_failures = 0
     _PUSH_INTERVAL = 0.4
     _MAX_STREAM_DISPLAY = 2500
@@ -946,6 +1043,12 @@ async def _run_and_display(
             await push(_build_display())
             last_push_time = now
 
+    async def on_session_id(session_id: str):
+        nonlocal session_id_persisted
+        await store.on_codex_response(user_id, chat_id, session_id, text)
+        session_id_persisted = True
+        _trace_log(f"[Codex 会话] request={request_id} session_id 已持久化")
+
     try:
         _trace_log(
             f"[run_codex] request={request_id} 开始 model={session.model} "
@@ -961,6 +1064,7 @@ async def _run_and_display(
             images=image_paths,
             on_text_chunk=on_text_chunk,
             on_tool_use=on_tool_use,
+            on_session_id=on_session_id,
             on_process_start=lambda proc: (
                 _active_runs.attach_process(user_id, proc, chat_id=chat_id),
                 _trace_log(f"[Codex 进程] request={request_id} pid={proc.pid}"),
@@ -971,6 +1075,9 @@ async def _run_and_display(
             f"chunks={output_chunks} streamed_chars={output_chars} final_chars={len(full_text)} "
             f"session={new_session_id}"
         )
+        if new_session_id and not session_id_persisted:
+            await store.on_codex_response(user_id, chat_id, new_session_id, text)
+            _trace_log(f"[Codex 会话] request={request_id} session_id 已在完成后保存")
     except Exception as e:
         if active_run.stop_requested:
             return
@@ -1014,9 +1121,6 @@ async def _run_and_display(
                 await feishu.send_text_to_user(user_id, final)
         except Exception as fallback_err:
             print(f"[error] 文本回退也失败: {fallback_err}", flush=True)
-
-    if new_session_id:
-        await store.on_codex_response(user_id, chat_id, new_session_id, text)
 
     if plan_exited and session.permission_mode == "plan":
         print(f"[Plan] ExitPlanMode 检测到，切换为 danger", flush=True)

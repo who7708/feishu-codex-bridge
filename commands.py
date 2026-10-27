@@ -170,7 +170,7 @@ async def _format_session_list(user_id: str, chat_id: str, store: SessionStore) 
     summaries = {}
     missing = []
     for sid in all_sids:
-        cached = store.get_summary(user_id, sid)
+        cached = store.get_summary(user_id, sid, chat_id)
         if cached:
             summaries[sid] = cached
         else:
@@ -189,7 +189,7 @@ async def _format_session_list(user_id: str, chat_id: str, store: SessionStore) 
                     summaries[sid] = result
                     _write_custom_title(sid, result)
             if new_summaries:
-                await store.batch_set_summaries(user_id, new_summaries)
+                await store.batch_set_summaries(user_id, new_summaries, chat_id)
 
     lines = []
 

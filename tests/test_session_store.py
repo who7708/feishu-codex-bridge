@@ -51,6 +51,18 @@ async def test_get_current_with_chat_id_group(temp_store):
 
 
 @pytest.mark.asyncio
+async def test_codex_thread_id_is_persisted_for_reuse(temp_store):
+    user_id = "user_thread_persist"
+    group_chat_id = "oc_group_thread_persist"
+
+    await temp_store.on_codex_response(user_id, group_chat_id, "codex-thread-123", "first question")
+
+    reloaded_store = SessionStore()
+    session = await reloaded_store.get_current(user_id, group_chat_id)
+    assert session.session_id == "codex-thread-123"
+
+
+@pytest.mark.asyncio
 async def test_session_isolation_between_chats(temp_store):
     """Test that private and group sessions are isolated"""
     user_id = "user_123"
@@ -120,9 +132,7 @@ async def test_list_sessions_with_chat_id(temp_store):
     assert len(sessions) == 0
 
     await temp_store.set_model(user_id, chat_id, "gpt-5.4")
-    raw = await temp_store.get_current_raw(user_id, chat_id)
-    raw["session_id"] = "test_session_123"
-    temp_store._save()
+    await temp_store.on_codex_response(user_id, chat_id, "test_session_123", "first question")
 
     await temp_store.new_session(user_id, chat_id)
 

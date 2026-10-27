@@ -33,7 +33,7 @@ DEFAULT_MODE=plan
 - 使用飞书卡片流式展示 Codex 文本和工具进度。
 - 下载飞书图片消息，并通过 `--image` 转发给 Codex。
 - 从 `~/.codex/sessions/**/*.jsonl` 和 `session_index.jsonl` 发现 Codex 会话。
-- 每个用户在不同私聊、群聊、话题下都有独立的 session、模型、工作目录和权限模式。
+- 私聊按用户复用 session；群聊按群 ID 跨成员和话题共享 session，模型、工作目录和权限模式仍按成员保存。
 - 用 `/stop` 终止当前 Codex 进程。
 - 支持模型、模式、工作空间、MCP、skills、plugins、usage 和 session resume 等命令。
 
@@ -144,6 +144,8 @@ flowchart LR
 ```
 
 运行链路是：飞书事件先进入 `lark-cli`，再交给 `main.py` 解析消息、处理并发锁和更新卡片；普通消息会进入 `codex_runner.py`，由它启动 `codex exec --json` 并解析 JSONL 流；斜杠命令由 `commands.py` 处理；会话、模型、工作目录和权限模式由 `session_store.py` 保存。
+
+私聊按用户 open_id 复用 Codex session；群聊按群 chat_id 在所有成员及话题间共享 session。`/new` 和 `/clear` 在私聊重置该私聊，在群聊重置整个群的共享 session。群内模型、权限模式和工作目录仍按成员分别保存；已有话题级 session 不会自动迁移。
 
 ## 环境变量
 
