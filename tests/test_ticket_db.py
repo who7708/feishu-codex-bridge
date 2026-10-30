@@ -120,17 +120,38 @@ def test_invalid_ticket_fails_even_when_time_window_is_open():
     assert decision["verificationState"] == "INVALID"
 
 
-def test_id_number_lookup_is_blocked_before_database_access(monkeypatch):
+def test_id_number_lookup_encrypts_for_environment_and_binds_id_no(monkeypatch):
     database = TicketDatabase("not-read")
+    captured = {}
 
-    def unexpected_cursor(_environment):
-        raise AssertionError("should not connect without a verified id_no_key algorithm")
+    def encrypt_id_no(environment, id_no):
+        captured["crypto_environment"] = environment
+        captured["plain_id_no"] = id_no
+        return "enc1_test_ciphertext"
 
-    monkeypatch.setattr(database, "cursor", unexpected_cursor)
+    class Cursor:
+        def execute(self, sql, params):
+            captured["sql"] = sql
+            captured["params"] = params
+
+        def fetchall(self):
+            return []
+
+    @contextmanager
+    def fake_cursor(environment):
+        captured["database_environment"] = environment
+        yield Cursor()
+
+    monkeypatch.setattr(database, "_encrypt_id_no", encrypt_id_no)
+    monkeypatch.setattr(database, "cursor", fake_cursor)
     result = database.query_tickets(
-        "prod", None, None, None, "private-id", None, None, None, None, None,
+        "qa", None, None, None, "private-id", None, None, None, None, None,
     )
-    assert "尚未与服务端 HashSec 验证" in result["error"]
+    assert captured["crypto_environment"] == captured["database_environment"] == "qa"
+    assert captured["plain_id_no"] == "private-id"
+    assert "ai.id_no = %s" in captured["sql"]
+    assert "enc1_test_ciphertext" in captured["params"]
+    assert result["matchedCount"] == 0
 
 
 def test_tool_error_response_does_not_expose_exception_details():

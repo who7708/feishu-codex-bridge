@@ -6,10 +6,13 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 import inspect
+import importlib.util
 import json
 import logging
 import os
 from pathlib import Path
+import sys
+import threading
 import time
 from typing import Any, Iterator, Literal
 
@@ -31,6 +34,31 @@ MAX_ROWS = 20
 MAX_CHECK_RECORDS = 10
 MAX_AUTH_CODES = 1000
 logger = logging.getLogger(__name__)
+_SM4_MODULES: dict[str, Any] = {}
+_SM4_MODULE_LOCK = threading.Lock()
+
+
+def _load_sm4_module(script_path: Path) -> Any:
+    """并发安全地复用工作区内的加密脚本模块，避免重复初始化 dataclass。"""
+    path_key = str(script_path.resolve())
+    with _SM4_MODULE_LOCK:
+        cached = _SM4_MODULES.get(path_key)
+        if cached is not None:
+            return cached
+        module_name = f"_ticket_query_sm4_crypto_{len(_SM4_MODULES)}"
+        spec = importlib.util.spec_from_file_location(module_name, script_path)
+        if spec is None or spec.loader is None:
+            raise ToolInputError("证件号加密组件无法加载")
+        module = importlib.util.module_from_spec(spec)
+        # sm4_crypto.py 使用 dataclass，执行前需登记模块名以供标准库解析类型。
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+        _SM4_MODULES[path_key] = module
+        return module
 
 
 class ToolInputError(Exception):
@@ -72,6 +100,37 @@ class TicketDatabase:
             # 不把路径或配置值返回到 MCP / LLM。
             raise ValueError("目标环境数据库配置不完整")
         return {key: str(value) for key, value in values.items() if value is not None}
+
+    def _encrypt_id_no(self, environment: str, id_no: str) -> str:
+        """使用与数据库连接相同环境文件中的 SM4 key，生成 ac_item.id_no 密文。"""
+        file_name = ENV_FILES.get(environment)
+        if not file_name:
+            raise ToolInputError("目标环境不支持证件号查询")
+        crypto_script = self.config_dir / "scripts" / "sm4_crypto.py"
+        if not crypto_script.is_file():
+            raise ToolInputError("证件号加密组件不存在，无法安全查询")
+
+        try:
+            module = _load_sm4_module(crypto_script)
+            env_file = self.config_dir / file_name
+            # 密钥只从所选环境文件读取，避免加密脚本回退到其他进程环境变量。
+            env_values = module.parse_env_file(env_file)
+            key_names = ("SM4_ENCRYPTKEY", "SM4_KEY", "SM4KEY", "sm4Key")
+            sm4_key = next((env_values.get(name, "").strip() for name in key_names
+                            if env_values.get(name, "").strip()), "")
+            if not sm4_key:
+                raise ToolInputError("目标环境未配置 SM4 加密密钥")
+            crypto = module.SM4Crypto(sm4_key)
+            return crypto.encrypt(id_no)
+        except ToolInputError:
+            raise
+        except Exception as exc:
+            # 异常可能包含配置路径或底层值，不能传回 MCP/飞书。
+            logger.error(
+                "证件号加密失败 environment=%s errorType=%s",
+                environment, type(exc).__name__,
+            )
+            raise ToolInputError("目标环境证件号加密失败，未执行数据库查询") from None
 
     @contextmanager
     def cursor(self, environment: str) -> Iterator[Any]:
@@ -201,12 +260,13 @@ class TicketDatabase:
 
     def _ticket_rows(
         self, cursor: Any, ticket_no: str | None, stock_code: str | None,
-        real_name: str | None, ac_show_id: str | None, ac_show_name: str | None,
+        real_name: str | None, encrypted_id_no: str | None,
+        ac_show_id: str | None, ac_show_name: str | None,
         session_id: str | None, ticket_price: float | None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-        identity_selectors = [value for value in (ticket_no, stock_code, real_name) if value]
+        identity_selectors = [value for value in (ticket_no, stock_code, real_name, encrypted_id_no) if value]
         if len(identity_selectors) != 1:
-            return [], {"error": "请在 ticketNo、stockCode、realName 中提供一个条件。"}
+            return [], {"error": "请在 ticketNo、stockCode、realName、idNo 中提供一个查询条件。"}
         if ac_show_id and ac_show_name:
             return [], {"error": "节目范围请在 acShowId、acShowName 中提供一个，不要同时传入。"}
         if real_name and not (ac_show_id or ac_show_name):
@@ -216,11 +276,11 @@ class TicketDatabase:
             if error:
                 return [], error
 
-        # id_no_key 的服务端 HashSec 尚未验证，不能用 MD5_SALT 猜测索引值。
         conditions = ["COALESCE(ai.is_deleted, 0) = 0", "COALESCE(ash.is_deleted, 0) = 0"]
         params: list[Any] = []
         for column, value in (("ai.ticket_no", ticket_no), ("ai.stock_code", stock_code),
-                              ("ai.real_name", real_name), ("ai.ac_show_id", ac_show_id),
+                              ("ai.real_name", real_name), ("ai.id_no", encrypted_id_no),
+                              ("ai.ac_show_id", ac_show_id),
                               ("ai.ac_show_session_id", session_id), ("asp.original_price", ticket_price)):
             if value is not None and value != "":
                 conditions.append(f"{column} = %s")
@@ -376,14 +436,19 @@ class TicketDatabase:
         ac_show_name: str | None, session_id: str | None, ticket_price: float | None,
         at_time: str | None,
     ) -> dict[str, Any]:
-        if id_no:
+        if id_no is not None:
+            id_no = id_no.strip()
+            if not id_no:
+                return {"error": "idNo 不能为空。"}
             if ticket_no or stock_code or real_name:
                 return {"error": "请只提供 ticketNo、stockCode、realName、idNo 中的一种查询条件。"}
-            return {"error": "证件号索引算法尚未与服务端 HashSec 验证，暂不按证件号查询。请改用票号、票码，或提供实名和节目条件。"}
+            if id_no.startswith("enc1_"):
+                return {"error": "请提供明文证件号；工具会按所选环境加密后查询。"}
+        encrypted_id_no = self._encrypt_id_no(environment, id_no) if id_no else None
         evaluation_time = self._parse_evaluation_time(at_time)
         with self.cursor(environment) as cursor:
             tickets, error = self._ticket_rows(
-                cursor, ticket_no, stock_code, real_name, ac_show_id,
+                cursor, ticket_no, stock_code, real_name, encrypted_id_no, ac_show_id,
                 ac_show_name, session_id, ticket_price,
             )
             if error:
@@ -424,7 +489,7 @@ class TicketDatabase:
             "truncated": truncated,
             "evaluationTime": evaluation_time.isoformat(sep=" "),
             "tickets": results,
-            "identityQueryNote": "证件号查询仅在服务端 HashSec 算法确认后开放。",
+            "identityQueryNote": "传入 idNo 时使用所选环境 SM4 key 加密后匹配 ac_item.id_no；查询结果不返回证件号。",
         }
 
     def _check_records(self, cursor: Any, ac_item_id: str) -> dict[str, Any]:

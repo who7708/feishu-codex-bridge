@@ -45,7 +45,7 @@ def query_ticket_information(
     ticketPrice: float | None = None,
     atTime: str | None = None,
 ) -> dict:
-    """只读查票并计算当前/指定时间能否核验。优先精确 ticketNo 或 stockCode；按姓名须带节目 ID/全称。atTime 为 ISO 本地时间。证件号索引未验证，传 idNo 会安全拒绝，不会猜哈希。"""
+    """只读查票并计算当前/指定时间能否核验。优先精确 ticketNo 或 stockCode；按姓名须带节目 ID/全称。传 idNo 时按所选 environment 的 SM4 key 加密后匹配 ac_item.id_no；不同环境密钥不可混用，查询结果不返回证件号。atTime 为 ISO 本地时间。"""
     return safe_tool_call(
         "query_ticket_information", database.query_tickets,
         environment, ticketNo, stockCode, realName, idNo, acShowId,
